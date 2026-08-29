@@ -103,10 +103,20 @@ Switch profiles with:
 udm-voip configure vodafone-pt
 ```
 
-The per-provider settings themselves live in
-`/data/udm-voip/profiles/<profile>.conf`. The profile is sourced *after*
-`/etc/udm-voip.conf`, so adjust a provider's values by editing its profile file
-rather than by overriding them in `udm-voip.conf`. The main options are:
+The per-provider defaults live in `/data/udm-voip/profiles/<profile>.conf`.
+The selected profile is loaded first and `/etc/udm-voip.conf` is applied on top
+of it, so any value set there overrides the profile. To change a single setting,
+add it to `/etc/udm-voip.conf` and leave the profile untouched:
+
+```sh
+VOIP_PROFILE="vodafone-pt"
+
+# Override just the WAN port; everything else comes from the profile.
+VOIP_WAN_INTERFACE="eth8"
+```
+
+`udm-voip configure` rewrites only the `VOIP_PROFILE` line, so overrides survive
+a profile switch. The main options are:
 
 | Option | Description |
 | --- | --- |

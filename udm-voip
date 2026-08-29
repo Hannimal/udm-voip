@@ -37,9 +37,12 @@ case "${1:-}" in
     configure)
         profile="${2:-vodafone-pt}"
         [ -f "$DATA_DIR/profiles/$profile.conf" ] || { echo "Unknown profile: $profile" >&2; exit 1; }
-        cat > "$CONF" <<CFG
-VOIP_PROFILE="$profile"
-CFG
+        # Rewrite only the profile selection so local overrides in $CONF survive.
+        if [ -f "$CONF" ] && grep -q '^[[:space:]]*VOIP_PROFILE=' "$CONF"; then
+            sed -i "s#^[[:space:]]*VOIP_PROFILE=.*#VOIP_PROFILE=\"$profile\"#" "$CONF"
+        else
+            printf 'VOIP_PROFILE="%s"\n' "$profile" >> "$CONF"
+        fi
         echo "Configured profile: $profile"
         systemctl restart udm-voip-acl-proxy.service udm-voip.service
         ;;

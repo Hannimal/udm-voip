@@ -12,12 +12,17 @@ die() { printf '[udm-voip] ERROR: %s\n' "$*" >&2; exit 1; }
 
 load_config() {
     [ -r "$CONF_FILE" ] || die "Missing configuration: $CONF_FILE"
+    # Read the configuration once to learn which profile to load.
     # shellcheck disable=SC1090
     . "$CONF_FILE"
     : "${VOIP_PROFILE:=vodafone-pt}"
     [ -r "$PROFILE_DIR/$VOIP_PROFILE.conf" ] || die "Unknown profile: $VOIP_PROFILE"
+    # The profile supplies the provider defaults, then the configuration is
+    # applied again on top so local settings in $CONF_FILE win.
     # shellcheck disable=SC1090
     . "$PROFILE_DIR/$VOIP_PROFILE.conf"
+    # shellcheck disable=SC1090
+    . "$CONF_FILE"
 }
 
 prefix_from_mask() {
