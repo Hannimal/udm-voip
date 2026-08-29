@@ -1,7 +1,9 @@
 #!/bin/sh
 set -eu
 
-SOURCE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO="Hannimal/udm-voip"
+BRANCH="${UDM_VOIP_BRANCH:-main}"
+SOURCE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd) || SOURCE_DIR=""
 DATA_DIR="/data/udm-voip"
 XML_CURL="/etc/freeswitch/autoload_configs/xml_curl.conf.xml"
 LEGACY_DATA="/data/vodafone-voip"
@@ -15,6 +17,19 @@ command -v systemctl >/dev/null 2>&1 || { echo "systemd is required" >&2; exit 1
 command -v busybox >/dev/null 2>&1 || { echo "busybox is required" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
 command -v iptables >/dev/null 2>&1 || { echo "iptables is required" >&2; exit 1; }
+
+# Fetch the tree when the script is piped straight from the network
+# (sh -c "$(curl .../install.sh)") instead of run from a checkout.
+if [ -z "$SOURCE_DIR" ] || [ ! -f "$SOURCE_DIR/udm-voipd" ]; then
+    command -v curl >/dev/null 2>&1 || { echo "curl is required" >&2; exit 1; }
+    BOOTSTRAP_DIR=$(mktemp -d)
+    trap 'rm -rf "$BOOTSTRAP_DIR"' EXIT INT TERM
+    echo "Downloading udm-voip ($BRANCH)..."
+    curl -sSfL "https://github.com/$REPO/archive/refs/heads/$BRANCH.tar.gz" \
+        | tar -xzf - -C "$BOOTSTRAP_DIR"
+    SOURCE_DIR="$BOOTSTRAP_DIR/udm-voip-$BRANCH"
+    [ -f "$SOURCE_DIR/udm-voipd" ] || { echo "Download failed" >&2; exit 1; }
+fi
 
 mkdir -p "$DATA_DIR/profiles"
 
