@@ -1,0 +1,52 @@
+#!/bin/bash
+set -u
+. /data/udm-voip/udm-voip-common
+load_config
+
+section() { printf '\n=== %s ===\n' "$1"; }
+
+section "Version"
+printf 'udm-voip: %s\n' "$(cat /data/udm-voip/VERSION 2>/dev/null || echo unknown)"
+ubnt-device-info summary 2>/dev/null || true
+
+section "Services"
+systemctl --no-pager --full status udm-voip.service 2>/dev/null | head -20 || true
+systemctl --no-pager --full status udm-voip-acl-proxy.service 2>/dev/null | head -20 || true
+
+section "VoIP interface"
+ip -d link show "$VOIP_INTERFACE" 2>/dev/null || true
+ip -4 addr show dev "$VOIP_INTERFACE" 2>/dev/null || true
+
+section "DHCP state"
+for f in ip mask router dns staticroutes sipsrv lease; do
+    printf '%-14s %s\n' "$f:" "$(cat "$STATE_DIR/$f" 2>/dev/null || echo '-')"
+done
+
+section "Main IMS routes"
+for range in $VOIP_IMS_RANGES; do
+    ip route show table main "$range" 2>/dev/null || true
+done
+
+section "Table $VOIP_ROUTE_TABLE"
+ip route show table "$VOIP_ROUTE_TABLE" 2>/dev/null || true
+
+section "NAT"
+iptables -t nat -L UDM_VOIP -n -v 2>/dev/null || true
+
+section "Talk ACL"
+if [ -n "${VOIP_TALK_ACL_TEST_IP:-}" ]; then
+    printf '%-20s ' "$VOIP_TALK_ACL_TEST_IP"
+    fs_cli -x "acl $VOIP_TALK_ACL_TEST_IP talk_acl" 2>/dev/null || echo unavailable
+else
+    for range in $VOIP_TALK_ACL_RANGES; do
+        ip="${range%/*}"
+        printf '%-20s ' "$ip"
+        fs_cli -x "acl $ip talk_acl" 2>/dev/null || echo unavailable
+    done
+fi
+
+section "UniFi Talk gateways"
+fs_cli -x "sofia status" 2>/dev/null || true
+
+section "Recent udm-voip logs"
+journalctl -u udm-voip.service -u udm-voip-acl-proxy.service -n 30 --no-pager 2>/dev/null || true

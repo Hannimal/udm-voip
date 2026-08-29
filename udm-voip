@@ -1,0 +1,69 @@
+#!/bin/bash
+set -u
+
+DATA_DIR="/data/udm-voip"
+CONF="/etc/udm-voip.conf"
+VERSION="$(cat "$DATA_DIR/VERSION" 2>/dev/null || echo unknown)"
+
+usage() {
+cat <<USAGE
+udm-voip $VERSION
+
+Usage:
+  udm-voip status
+  udm-voip restart
+  udm-voip diagnose
+  udm-voip configure [profile]
+  udm-voip reload-acl
+  udm-voip migrate-legacy
+  udm-voip uninstall
+USAGE
+}
+
+case "${1:-}" in
+    status)
+        systemctl --no-pager status udm-voip.service udm-voip-acl-proxy.service
+        ;;
+    restart)
+        systemctl restart udm-voip-acl-proxy.service
+        systemctl restart udm-voip.service
+        sleep 3
+        fs_cli -x "reload mod_xml_curl" >/dev/null 2>&1 || true
+        fs_cli -x "reloadacl" >/dev/null 2>&1 || true
+        ;;
+    diagnose)
+        exec "$DATA_DIR/udm-voip-diag"
+        ;;
+    configure)
+        profile="${2:-vodafone-pt}"
+        [ -f "$DATA_DIR/profiles/$profile.conf" ] || { echo "Unknown profile: $profile" >&2; exit 1; }
+        cat > "$CONF" <<CFG
+VOIP_PROFILE="$profile"
+CFG
+        echo "Configured profile: $profile"
+        systemctl restart udm-voip-acl-proxy.service udm-voip.service
+        ;;
+    reload-acl)
+        fs_cli -x "reload mod_xml_curl"
+        fs_cli -x "reloadacl"
+        ;;
+    migrate-legacy)
+        exec "$DATA_DIR/udm-voip-migrate-legacy"
+        ;;
+    uninstall)
+        systemctl disable --now udm-voip.service udm-voip-acl-proxy.service 2>/dev/null || true
+        "$DATA_DIR/udm-voip-cleanup" 2>/dev/null || true
+        if [ -f "$DATA_DIR/xml_curl.conf.xml.original" ]; then
+            cp "$DATA_DIR/xml_curl.conf.xml.original" /etc/freeswitch/autoload_configs/xml_curl.conf.xml
+        fi
+        rm -f /etc/systemd/system/udm-voip.service /etc/systemd/system/udm-voip-acl-proxy.service
+        rm -f /usr/local/sbin/udm-voip
+        rm -rf "$DATA_DIR"
+        rm -f "$CONF"
+        systemctl daemon-reload
+        fs_cli -x "reload mod_xml_curl" >/dev/null 2>&1 || true
+        fs_cli -x "reloadacl" >/dev/null 2>&1 || true
+        echo "udm-voip removed"
+        ;;
+    *) usage; exit 1;;
+esac

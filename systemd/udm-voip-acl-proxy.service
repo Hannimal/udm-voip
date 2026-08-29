@@ -1,0 +1,13 @@
+[Unit]
+Description=UDM VoIP UniFi Talk ACL proxy
+After=unifi-talk.service
+Wants=unifi-talk.service
+
+[Service]
+Type=simple
+ExecStart=/data/udm-voip/udm-voip-acl-proxyd
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

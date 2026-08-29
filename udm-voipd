@@ -1,0 +1,58 @@
+#!/bin/bash
+set -u
+
+. /data/udm-voip/udm-voip-common
+load_config
+mkdir -p "$STATE_DIR"
+
+cleanup_pid() {
+    if [ -n "${DHCP_PID:-}" ] && kill -0 "$DHCP_PID" >/dev/null 2>&1; then
+        kill "$DHCP_PID" >/dev/null 2>&1 || true
+        wait "$DHCP_PID" >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup_pid TERM INT EXIT
+
+ensure_vlan() {
+    ip link show "$VOIP_WAN_INTERFACE" >/dev/null 2>&1 || return 1
+    if ! ip link show "$VOIP_INTERFACE" >/dev/null 2>&1; then
+        ip link add link "$VOIP_WAN_INTERFACE" name "$VOIP_INTERFACE" type vlan id "$VOIP_WAN_VLAN" || return 1
+    fi
+    ip link set "$VOIP_INTERFACE" up
+}
+
+ensure_xml_proxy_binding() {
+    [ -f "$VOIP_TALK_XML_CURL_CONFIG" ] || return 0
+    local upstream="$VOIP_TALK_XML_UPSTREAM/api/pbx/configuration"
+    local proxy="http://$VOIP_TALK_XML_PROXY_HOST:$VOIP_TALK_XML_PROXY_PORT/api/pbx/configuration"
+    # Do not redirect FreeSWITCH until the proxy is listening.
+    if ! ss -ltn 2>/dev/null | grep -q "${VOIP_TALK_XML_PROXY_HOST}:${VOIP_TALK_XML_PROXY_PORT}"; then
+        return 0
+    fi
+    if grep -qF "$upstream" "$VOIP_TALK_XML_CURL_CONFIG"; then
+        sed -i "s#${upstream}#${proxy}#g" "$VOIP_TALK_XML_CURL_CONFIG"
+        fs_cli -x "reload mod_xml_curl" >/dev/null 2>&1 || true
+        fs_cli -x "reloadacl" >/dev/null 2>&1 || true
+    fi
+}
+
+start_dhcp() {
+    ensure_vlan || return 1
+    busybox udhcpc -i "$VOIP_INTERFACE" -f -v \
+        -p "/run/udhcpc-${VOIP_INTERFACE}.pid" \
+        -s /data/udm-voip/udhcpc.hook &
+    DHCP_PID=$!
+}
+
+DHCP_PID=""
+while true; do
+    ensure_vlan || { sleep 2; continue; }
+    if [ -z "$DHCP_PID" ] || ! kill -0 "$DHCP_PID" >/dev/null 2>&1; then
+        start_dhcp || true
+    fi
+    if [ -f "$STATE_DIR/ip" ] && [ -f "$STATE_DIR/router" ] && [ -f "$STATE_DIR/staticroutes" ]; then
+        /data/udm-voip/udm-voip-apply >/dev/null 2>&1 || true
+    fi
+    ensure_xml_proxy_binding
+    sleep 10
+done

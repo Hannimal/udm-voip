@@ -1,0 +1,33 @@
+#!/bin/sh
+set -u
+
+STATE_DIR="/run/udm-voip"
+LIB_DIR="/data/udm-voip"
+mkdir -p "$STATE_DIR"
+
+write_state() {
+    key="$1"
+    value="$2"
+    tmp="$STATE_DIR/$key.tmp"
+    printf '%s\n' "$value" > "$tmp"
+    mv "$tmp" "$STATE_DIR/$key"
+}
+
+case "${1:-}" in
+    bound|renew)
+        write_state ip "${ip:-}"
+        write_state mask "${mask:-${subnet:-}}"
+        write_state router "${router:-}"
+        write_state dns "${dns:-}"
+        write_state staticroutes "${staticroutes:-}"
+        write_state sipsrv "${sipsrv:-}"
+        write_state lease "${lease:-}"
+        "$LIB_DIR/udm-voip-apply" reset
+        ;;
+    deconfig)
+        rm -f "$STATE_DIR/ip" "$STATE_DIR/mask" "$STATE_DIR/router" \
+              "$STATE_DIR/dns" "$STATE_DIR/staticroutes" "$STATE_DIR/sipsrv" "$STATE_DIR/lease"
+        ;;
+esac
+
+exit 0

@@ -1,0 +1,14 @@
+[Unit]
+Description=UDM VoIP helper
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/data/udm-voip/udm-voipd
+ExecStopPost=/data/udm-voip/udm-voip-cleanup
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

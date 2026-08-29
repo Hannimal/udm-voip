@@ -1,0 +1,56 @@
+#!/bin/bash
+set -u
+
+CONF_FILE="${UDM_VOIP_CONF:-/etc/udm-voip.conf}"
+DATA_DIR="/data/udm-voip"
+STATE_DIR="/run/udm-voip"
+PROFILE_DIR="$DATA_DIR/profiles"
+
+log() { printf '[udm-voip] %s\n' "$*"; }
+warn() { printf '[udm-voip] WARNING: %s\n' "$*" >&2; }
+die() { printf '[udm-voip] ERROR: %s\n' "$*" >&2; exit 1; }
+
+load_config() {
+    [ -r "$CONF_FILE" ] || die "Missing configuration: $CONF_FILE"
+    # shellcheck disable=SC1090
+    . "$CONF_FILE"
+    : "${VOIP_PROFILE:=vodafone-pt}"
+    [ -r "$PROFILE_DIR/$VOIP_PROFILE.conf" ] || die "Unknown profile: $VOIP_PROFILE"
+    # shellcheck disable=SC1090
+    . "$PROFILE_DIR/$VOIP_PROFILE.conf"
+}
+
+prefix_from_mask() {
+    local mask="$1"
+    case "$mask" in
+        '' ) echo 16 ;;
+        *.* )
+            local IFS=. octet bits=0
+            for octet in $mask; do
+                case "$octet" in
+                    255) bits=$((bits+8));;
+                    254) bits=$((bits+7));;
+                    252) bits=$((bits+6));;
+                    248) bits=$((bits+5));;
+                    240) bits=$((bits+4));;
+                    224) bits=$((bits+3));;
+                    192) bits=$((bits+2));;
+                    128) bits=$((bits+1));;
+                    0) ;;
+                    *) die "Unsupported netmask: $mask";;
+                esac
+            done
+            echo "$bits"
+            ;;
+        *) echo "$mask" ;;
+    esac
+}
+
+get_talk_source() {
+    if [ "${VOIP_TALK_SOURCE:-auto}" != "auto" ]; then
+        echo "$VOIP_TALK_SOURCE"
+        return
+    fi
+    ip -4 -o addr show dev "${VOIP_TALK_SOURCE_INTERFACE:-br0}" scope global 2>/dev/null \
+        | awk '{print $4}' | cut -d/ -f1 | head -1
+}

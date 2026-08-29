@@ -1,0 +1,11 @@
+#!/bin/bash
+set -u
+. /data/udm-voip/udm-voip-common
+load_config
+
+export UDM_VOIP_XML_UPSTREAM="$VOIP_TALK_XML_UPSTREAM"
+export UDM_VOIP_XML_PROXY_HOST="$VOIP_TALK_XML_PROXY_HOST"
+export UDM_VOIP_XML_PROXY_PORT="$VOIP_TALK_XML_PROXY_PORT"
+export UDM_VOIP_TALK_ACL_RANGES="$VOIP_TALK_ACL_RANGES"
+
+exec /usr/bin/python3 /data/udm-voip/acl-proxy.py

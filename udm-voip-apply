@@ -1,0 +1,64 @@
+#!/bin/bash
+set -u
+
+. /data/udm-voip/udm-voip-common
+load_config
+mkdir -p "$STATE_DIR"
+
+for f in ip mask router staticroutes; do
+    [ -f "$STATE_DIR/$f" ] || exit 0
+done
+
+VOIP_IP="$(cat "$STATE_DIR/ip")"
+MASK="$(cat "$STATE_DIR/mask")"
+ROUTER="$(cat "$STATE_DIR/router")"
+STATIC_ROUTES="$(cat "$STATE_DIR/staticroutes")"
+PREFIX="$(prefix_from_mask "$MASK")"
+TALK_SOURCE="$(get_talk_source)"
+
+[ -n "$VOIP_IP" ] || exit 0
+[ -n "$ROUTER" ] || exit 0
+[ -n "$TALK_SOURCE" ] || die "Unable to determine UniFi Talk source address"
+
+if ! ip link show "$VOIP_INTERFACE" >/dev/null 2>&1; then
+    ip link add link "$VOIP_WAN_INTERFACE" name "$VOIP_INTERFACE" type vlan id "$VOIP_WAN_VLAN"
+fi
+ip link set "$VOIP_INTERFACE" up
+
+CURRENT="$(ip -4 -o addr show dev "$VOIP_INTERFACE" scope global 2>/dev/null | awk '{print $4}' | head -1)"
+if [ "$CURRENT" != "$VOIP_IP/$PREFIX" ]; then
+    ip addr flush dev "$VOIP_INTERFACE" scope global 2>/dev/null || true
+    ip addr add "$VOIP_IP/$PREFIX" dev "$VOIP_INTERFACE"
+fi
+
+if [ "${1:-}" = "reset" ]; then
+    ip route flush table "$VOIP_ROUTE_TABLE" 2>/dev/null || true
+fi
+
+CONNECTED_NET="$(ip -4 route show dev "$VOIP_INTERFACE" proto kernel scope link 2>/dev/null | awk -v ip="$VOIP_IP" '$0 ~ "src " ip {print $1; exit}')"
+if [ -n "$CONNECTED_NET" ]; then
+    ip route replace "$CONNECTED_NET" dev "$VOIP_INTERFACE" src "$VOIP_IP" table "$VOIP_ROUTE_TABLE"
+fi
+
+set -- $STATIC_ROUTES
+while [ "$#" -ge 2 ]; do
+    ip route replace "$1" via "$2" dev "$VOIP_INTERFACE" table "$VOIP_ROUTE_TABLE"
+    shift 2
+done
+
+for range in $VOIP_IMS_RANGES; do
+    ip route replace "$range" via "$ROUTER" dev "$VOIP_INTERFACE" table main metric 50
+done
+
+iptables -w 10 -t nat -N UDM_VOIP >/dev/null 2>&1 || true
+if ! iptables -w 10 -t nat -C POSTROUTING -j UDM_VOIP >/dev/null 2>&1; then
+    iptables -w 10 -t nat -I POSTROUTING 1 -j UDM_VOIP
+fi
+iptables -w 10 -t nat -F UDM_VOIP
+for range in $VOIP_IMS_RANGES; do
+    iptables -w 10 -t nat -A UDM_VOIP \
+        -s "$TALK_SOURCE/32" -d "$range" -o "$VOIP_INTERFACE" \
+        -j SNAT --to-source "$VOIP_IP"
+done
+
+exit 0

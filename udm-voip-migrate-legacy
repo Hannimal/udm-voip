@@ -1,0 +1,102 @@
+#!/bin/bash
+set -u
+
+NEW_DATA="/data/udm-voip"
+LEGACY_DATA="/data/vodafone-voip"
+BACKUP_DIR="$NEW_DATA/legacy-backup"
+
+legacy_present() {
+    [ -d "$LEGACY_DATA" ] || \
+    [ -f /etc/systemd/system/vodafone-voip.service ] || \
+    [ -f /etc/systemd/system/vodafone-talk-xml-proxy.service ] || \
+    systemctl list-unit-files vodafone-voip.service --no-legend 2>/dev/null | grep -q '^vodafone-voip.service' || \
+    systemctl list-unit-files vodafone-talk-xml-proxy.service --no-legend 2>/dev/null | grep -q '^vodafone-talk-xml-proxy.service'
+}
+
+backup_legacy() {
+    mkdir -p "$BACKUP_DIR"
+
+    if [ -d "$LEGACY_DATA" ] && [ ! -d "$BACKUP_DIR/data-vodafone-voip" ]; then
+        cp -a "$LEGACY_DATA" "$BACKUP_DIR/data-vodafone-voip"
+    fi
+
+    for unit in vodafone-voip.service vodafone-talk-xml-proxy.service; do
+        if [ -f "/etc/systemd/system/$unit" ]; then
+            cp -a "/etc/systemd/system/$unit" "$BACKUP_DIR/$unit"
+        fi
+    done
+}
+
+stop_legacy_acl_proxy() {
+    systemctl disable vodafone-talk-xml-proxy.service >/dev/null 2>&1 || true
+    systemctl stop vodafone-talk-xml-proxy.service >/dev/null 2>&1 || true
+}
+
+stop_legacy_network() {
+    systemctl disable vodafone-voip.service >/dev/null 2>&1 || true
+    systemctl stop vodafone-voip.service >/dev/null 2>&1 || true
+}
+
+cleanup_legacy_runtime() {
+    for priority in 30960 30970 30971 30980 30981 31000; do
+        while ip rule del priority "$priority" >/dev/null 2>&1; do :; done
+    done
+
+    while iptables -w 10 -t nat -D POSTROUTING -j VODAFONE_VOIP >/dev/null 2>&1; do :; done
+    iptables -w 10 -t nat -F VODAFONE_VOIP >/dev/null 2>&1 || true
+    iptables -w 10 -t nat -X VODAFONE_VOIP >/dev/null 2>&1 || true
+
+    while iptables -w 10 -t mangle -D OUTPUT \
+        -d 213.30.59.0/24 -p udp --dport 5060 \
+        -j MARK --set-xmark 0x101/0xffffffff >/dev/null 2>&1; do :; done
+    while iptables -w 10 -t mangle -D OUTPUT \
+        -d 213.30.55.0/27 -p udp --dport 5060 \
+        -j MARK --set-xmark 0x101/0xffffffff >/dev/null 2>&1; do :; done
+}
+
+remove_legacy_units() {
+    rm -f /etc/systemd/system/vodafone-voip.service
+    rm -f /etc/systemd/system/vodafone-talk-xml-proxy.service
+    systemctl daemon-reload
+}
+
+if ! legacy_present; then
+    exit 0
+fi
+
+echo "[udm-voip] Legacy Vodafone VoIP setup detected."
+echo "[udm-voip] Backing it up to $BACKUP_DIR"
+backup_legacy
+
+# Free port 3424 before the new ACL proxy starts.
+stop_legacy_acl_proxy
+
+# The installer starts the new ACL proxy before calling the network cutover.
+if systemctl is-active --quiet udm-voip-acl-proxy.service; then
+    echo "[udm-voip] New ACL proxy is running."
+else
+    echo "[udm-voip] WARNING: new ACL proxy is not active yet."
+fi
+
+# Stop the old DHCP/network service. Its cleanup may briefly remove VLAN 101.
+stop_legacy_network
+
+# Bring the new implementation up immediately.
+systemctl restart udm-voip.service
+
+# Wait briefly for DHCP and the IMS routes.
+for _ in $(seq 1 20); do
+    if ip -4 addr show dev voip 2>/dev/null | grep -q 'inet ' && \
+       ip route show table main 2>/dev/null | grep -q '213.30.59.0/24.*dev voip'; then
+        break
+    fi
+    sleep 1
+done
+
+cleanup_legacy_runtime
+remove_legacy_units
+
+# Keep the original directory untouched as an additional rollback source.
+# It is no longer started by systemd.
+
+echo "[udm-voip] Legacy migration complete."
