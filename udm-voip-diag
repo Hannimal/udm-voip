@@ -30,8 +30,23 @@ done
 section "Table $VOIP_ROUTE_TABLE"
 ip route show table "$VOIP_ROUTE_TABLE" 2>/dev/null || true
 
-section "NAT"
+section "Policy rules"
+ip -4 rule show 2>/dev/null || true
+others="$(ip -4 rule show 2>/dev/null | grep -E "lookup ${VOIP_ROUTE_TABLE}( |\$)" | grep -v ' to ' || true)"
+[ -z "$others" ] || printf 'WARNING: table %s is also used by other rules:\n%s\n' "$VOIP_ROUTE_TABLE" "$others"
+
+section "IMS route lookup"
+src="$(get_talk_source)"
+for range in $VOIP_IMS_RANGES; do
+    dst="${range%/*}"
+    printf '%s: ' "$dst"
+    ip -4 route get "$dst" ${src:+from "$src"} 2>/dev/null | head -1 \
+        || ip -4 route get "$dst" 2>/dev/null | head -1 || echo unavailable
+done
+
+section "NAT / input"
 iptables -t nat -L UDM_VOIP -n -v 2>/dev/null || true
+iptables -t filter -L UDM_VOIP_IN -n -v 2>/dev/null || true
 
 section "Talk ACL"
 if [ -n "${VOIP_TALK_ACL_TEST_IP:-}" ]; then
