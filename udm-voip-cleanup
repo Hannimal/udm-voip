@@ -7,10 +7,16 @@ for range in $VOIP_IMS_RANGES; do
     ip route del "$range" table main 2>/dev/null || true
 done
 ip route flush table "$VOIP_ROUTE_TABLE" 2>/dev/null || true
+for range in $VOIP_IMS_RANGES; do
+    while ip -4 rule del to "$range" lookup "$VOIP_ROUTE_TABLE" 2>/dev/null; do :; done
+done
 
 while iptables -w 10 -t nat -D POSTROUTING -j UDM_VOIP >/dev/null 2>&1; do :; done
 iptables -w 10 -t nat -F UDM_VOIP 2>/dev/null || true
 iptables -w 10 -t nat -X UDM_VOIP 2>/dev/null || true
+while iptables -w 10 -t filter -D INPUT -j UDM_VOIP_IN >/dev/null 2>&1; do :; done
+iptables -w 10 -t filter -F UDM_VOIP_IN 2>/dev/null || true
+iptables -w 10 -t filter -X UDM_VOIP_IN 2>/dev/null || true
 
 ip addr flush dev "$VOIP_INTERFACE" scope global 2>/dev/null || true
 ip link del "$VOIP_INTERFACE" 2>/dev/null || true

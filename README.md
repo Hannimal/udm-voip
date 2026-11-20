@@ -125,6 +125,7 @@ a profile switch. The main options are:
 | `VOIP_INTERFACE` | Name given to the created VLAN interface (e.g. `voip`). |
 | `VOIP_DHCP` | Whether to request a DHCP lease on the VoIP VLAN. |
 | `VOIP_ROUTE_TABLE` | Policy routing table used for the IMS routes. |
+| `VOIP_RULE_PRIORITY` | `ip rule` priority sending the IMS ranges to that table; must be below UniFi's multi-WAN rules. |
 | `VOIP_IMS_RANGES` | Provider IMS networks routed over the VoIP VLAN. |
 | `VOIP_TALK_ACL_RANGES` | Networks added to FreeSWITCH's `talk_acl`. |
 | `VOIP_TALK_SOURCE` / `VOIP_TALK_SOURCE_INTERFACE` | Source address advertised to UniFi Talk; `auto` picks the first IPv4 on the interface. |
@@ -231,6 +232,14 @@ tcpdump -ni any -nn -s0 -A \
 
 `udm-voip` never replaces the normal UniFi WAN default route. Only
 provider-specific IMS networks are routed through the VoIP VLAN.
+
+The IMS ranges are routed through table `VOIP_ROUTE_TABLE`, selected by an
+`ip rule` at priority `VOIP_RULE_PRIORITY` (default `10101`). This matters with
+**multi-WAN** (failover or load balancing): UniFi then adds its own policy
+rules (fwmark and per-WAN tables such as `201`/`202`) that are evaluated before
+the `main` table, so a route in `main` alone is ignored and SIP leaves through a
+WAN port. `udm-voip diagnose` shows the rules and the route the IMS traffic
+actually takes.
 
 ## License
 

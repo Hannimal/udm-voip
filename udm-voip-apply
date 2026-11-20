@@ -14,11 +14,11 @@ MASK="$(cat "$STATE_DIR/mask")"
 ROUTER="$(cat "$STATE_DIR/router")"
 STATIC_ROUTES="$(cat "$STATE_DIR/staticroutes")"
 PREFIX="$(prefix_from_mask "$MASK")"
-TALK_SOURCE="$(get_talk_source)"
+RULE_PRIORITY="${VOIP_RULE_PRIORITY:-10101}"
+CHANGED=0
 
 [ -n "$VOIP_IP" ] || exit 0
 [ -n "$ROUTER" ] || exit 0
-[ -n "$TALK_SOURCE" ] || die "Unable to determine UniFi Talk source address"
 
 if ! ip link show "$VOIP_INTERFACE" >/dev/null 2>&1; then
     ip link add link "$VOIP_WAN_INTERFACE" name "$VOIP_INTERFACE" type vlan id "$VOIP_WAN_VLAN"
@@ -29,6 +29,7 @@ CURRENT="$(ip -4 -o addr show dev "$VOIP_INTERFACE" scope global 2>/dev/null | a
 if [ "$CURRENT" != "$VOIP_IP/$PREFIX" ]; then
     ip addr flush dev "$VOIP_INTERFACE" scope global 2>/dev/null || true
     ip addr add "$VOIP_IP/$PREFIX" dev "$VOIP_INTERFACE"
+    CHANGED=1
 fi
 
 if [ "${1:-}" = "reset" ]; then
@@ -47,7 +48,21 @@ while [ "$#" -ge 2 ]; do
 done
 
 for range in $VOIP_IMS_RANGES; do
+    ip route replace "$range" via "$ROUTER" dev "$VOIP_INTERFACE" src "$VOIP_IP" table "$VOIP_ROUTE_TABLE"
+    # Kept in main as a fallback for single-WAN setups.
     ip route replace "$range" via "$ROUTER" dev "$VOIP_INTERFACE" table main metric 50
+done
+
+# With multi-WAN, UniFi adds policy rules (fwmark and per-WAN tables such as
+# 201/202) that are evaluated before the main table. Their default routes win
+# over the main-table IMS routes, so SIP leaves through a WAN instead of the
+# VoIP VLAN. A destination rule with a lower priority than UniFi's rules makes
+# the IMS ranges always resolve through our table first.
+for range in $VOIP_IMS_RANGES; do
+    if ! ip -4 rule show 2>/dev/null | grep -qE "^${RULE_PRIORITY}:.* to ${range} lookup ${VOIP_ROUTE_TABLE}( |\$)"; then
+        ip -4 rule add to "$range" lookup "$VOIP_ROUTE_TABLE" priority "$RULE_PRIORITY"
+        CHANGED=1
+    fi
 done
 
 iptables -w 10 -t nat -N UDM_VOIP >/dev/null 2>&1 || true
@@ -56,9 +71,35 @@ if ! iptables -w 10 -t nat -C POSTROUTING -j UDM_VOIP >/dev/null 2>&1; then
 fi
 iptables -w 10 -t nat -F UDM_VOIP
 for range in $VOIP_IMS_RANGES; do
+    # Any source, not just br0: with multi-WAN FreeSWITCH can bind to a WAN
+    # address, and then a br0-only rule never matches.
     iptables -w 10 -t nat -A UDM_VOIP \
-        -s "$TALK_SOURCE/32" -d "$range" -o "$VOIP_INTERFACE" \
+        ! -s "$VOIP_IP/32" -d "$range" -o "$VOIP_INTERFACE" \
         -j SNAT --to-source "$VOIP_IP"
 done
+
+# Accept traffic from the IMS networks on the VoIP VLAN. UniFi's firewall
+# does not know this interface, so new inbound flows (an INVITE from another
+# P-CSCF host, RTP) would otherwise hit the default input policy.
+iptables -w 10 -t filter -N UDM_VOIP_IN >/dev/null 2>&1 || true
+if ! iptables -w 10 -t filter -C INPUT -j UDM_VOIP_IN >/dev/null 2>&1; then
+    iptables -w 10 -t filter -I INPUT 1 -j UDM_VOIP_IN
+fi
+iptables -w 10 -t filter -F UDM_VOIP_IN
+for range in $VOIP_IMS_RANGES; do
+    iptables -w 10 -t filter -A UDM_VOIP_IN -i "$VOIP_INTERFACE" -s "$range" -j ACCEPT
+done
+
+# SIP over UDP keeps refreshing the same 5060<->5060 conntrack entry, so a
+# flow first NATed out of a WAN (before the lease/rule existed, or after a
+# WAN failover) never picks up the new route and SNAT. Drop those entries
+# whenever the routing changed.
+if [ "$CHANGED" = 1 ] || [ "${1:-}" = "reset" ]; then
+    if command -v conntrack >/dev/null 2>&1; then
+        for range in $VOIP_IMS_RANGES; do
+            conntrack -D -d "$range" >/dev/null 2>&1 || true
+        done
+    fi
+fi
 
 exit 0
